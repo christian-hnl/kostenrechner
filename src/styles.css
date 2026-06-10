@@ -257,6 +257,46 @@ button.del:hover { color: var(--err); background: rgba(239, 68, 68, 0.1); }
 .bar-fill.hl { background: linear-gradient(90deg, var(--good), #34d399); }
 .bar-value { text-align: right; font-weight: 700; font-size: 0.95rem; }
 
+/* ---------- Diagrams (Charts.tsx) ---------- */
+.stacked-bar { display: flex; width: 100%; overflow: hidden; background: rgba(255,255,255,0.05); box-shadow: inset 0 2px 4px rgba(0,0,0,0.2); }
+.stacked-seg { height: 100%; transition: width 0.5s cubic-bezier(0.4,0,0.2,1); }
+.stacked-seg + .stacked-seg { box-shadow: inset 1px 0 0 rgba(0,0,0,0.25); }
+
+.donut { display: block; }
+.donut .donut-center { font-size: 1.05rem; font-weight: 800; }
+.donut .donut-sub { font-size: 0.62rem; font-weight: 600; opacity: 0.7; text-transform: uppercase; letter-spacing: 0.05em; }
+
+.seg-strip { display: flex; width: 100%; border-radius: var(--radius-sm); overflow: hidden; box-shadow: inset 0 2px 4px rgba(0,0,0,0.2); }
+.seg-strip-cell { height: 100%; display: flex; align-items: center; justify-content: center; font-size: 0.7rem; font-weight: 700; color: rgba(255,255,255,0.9); transition: width 0.5s ease; }
+.seg-strip-cell + .seg-strip-cell { box-shadow: inset 1px 0 0 rgba(0,0,0,0.25); }
+
+.chart-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 0.8rem; color: var(--text-muted); }
+.chart-legend-item { display: inline-flex; align-items: center; gap: 6px; }
+.chart-legend-swatch { width: 12px; height: 12px; border-radius: 3px; flex-shrink: 0; }
+.chart-legend.mt-8 { margin-top: 8px; }
+
+/* per-person stacked cost breakdown rows */
+.breakdown { display: flex; flex-direction: column; gap: 14px; margin-bottom: 20px; padding: 20px; background: rgba(0,0,0,0.2); border-radius: var(--radius-md); }
+.breakdown-row { display: grid; grid-template-columns: 150px 1fr 110px; align-items: center; gap: 16px; }
+.breakdown-name { display: flex; align-items: center; gap: 8px; font-size: 0.9rem; font-weight: 600; overflow: hidden; }
+.breakdown-name .swatch { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+.breakdown-name .name-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.breakdown-total { text-align: right; font-weight: 700; }
+.breakdown-total small { display: block; font-weight: 500; color: var(--text-muted); font-size: 0.72rem; }
+
+/* analysis card grid */
+.analysis-grid { display: grid; grid-template-columns: 160px 1fr; gap: 24px; align-items: center; }
+@media (max-width: 720px) { .analysis-grid { grid-template-columns: 1fr; } }
+.analysis-blocks { display: flex; flex-direction: column; gap: 18px; }
+.analysis-block-title { font-size: 0.72rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); font-weight: 700; margin-bottom: 8px; }
+.donut-wrap { display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--text-main); }
+
+.stat-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }
+.stat-tile { background: rgba(0,0,0,0.2); border: 1px solid var(--card-border); border-radius: var(--radius-md); padding: 14px; }
+.stat-tile .stat-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); font-weight: 700; }
+.stat-tile .stat-value { font-size: 1.25rem; font-weight: 800; margin-top: 4px; }
+.stat-tile .stat-hint { font-size: 0.72rem; color: var(--text-muted); margin-top: 2px; }
+
 .result-table { width: 100%; border-collapse: collapse; background: rgba(0,0,0,0.15); border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--card-border); }
 .result-table th, .result-table td { text-align: right; padding: 12px 14px; border-bottom: 1px solid var(--card-border); font-size: 0.9rem; }
 .result-table th:first-child, .result-table td:first-child { text-align: left; }
@@ -376,76 +416,132 @@ button.del:hover { color: var(--err); background: rgba(239, 68, 68, 0.1); }
     z-index: 1000;
   }
 
+  @page { margin: 13mm; }
+
   .invoice-container {
     width: 100%;
-    font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif;
-    color: #333;
+    font-family: 'Inter', 'Helvetica Neue', Helvetica, Arial, sans-serif;
+    color: #1e293b;
+    font-size: 13px;
   }
+
+  /* Header — accent underline + strong title hierarchy */
   .invoice-header {
-    border-bottom: 2px solid #e2e8f0;
-    padding-bottom: 20px;
-    margin-bottom: 30px;
+    border-bottom: 3px solid #3b82f6;
+    padding-bottom: 16px;
+    margin-bottom: 28px;
     display: flex;
     justify-content: space-between;
     align-items: flex-end;
   }
   .invoice-header h1 {
     margin: 0;
-    font-size: 24px;
-    color: #1e293b;
+    font-size: 26px;
+    font-weight: 800;
+    letter-spacing: -0.02em;
+    color: #0f172a;
   }
   .invoice-date {
     color: #64748b;
     margin: 0;
+    font-size: 13px;
+    font-weight: 600;
   }
+
+  /* Recipient — soft card with accent rail */
   .invoice-to {
-    margin-bottom: 30px;
+    background: #f1f5f9;
+    border-left: 4px solid #3b82f6;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 28px;
   }
   .invoice-to h3 {
-    margin: 0 0 5px 0;
-    font-size: 14px;
+    margin: 0 0 4px 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
     color: #64748b;
     text-transform: uppercase;
   }
   .invoice-to h2 {
     margin: 0;
-    font-size: 28px;
+    font-size: 26px;
+    font-weight: 800;
     color: #0f172a;
   }
+
+  /* Section sub-headings inside invoices */
+  .invoice-container h4 { color: #334155 !important; font-size: 13px; font-weight: 700; }
+
   .invoice-map-box {
-    margin-bottom: 30px;
-    border: 1px solid #cbd5e1;
-    border-radius: 8px;
+    margin-bottom: 18px;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    overflow: hidden;
+    page-break-inside: avoid;
+    box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+  }
+
+  /* Neutralise the dark on-screen theme for analysis blocks on white paper */
+  .analysis-grid { page-break-inside: avoid; }
+  .donut-wrap { color: #0f172a; }
+  .stat-tile {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+  }
+  .stat-tile .stat-value { color: #0f172a; }
+  .stat-tile .stat-label, .stat-tile .stat-hint { color: #64748b; }
+  .breakdown {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-radius: 10px;
+    padding: 16px;
+  }
+  .stacked-bar, .bar-track { background: #e2e8f0; box-shadow: none; }
+  .chart-legend { color: #64748b; }
+
+  /* Itemised table — rounded frame, zebra rows */
+  .invoice-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    margin-bottom: 32px;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
     overflow: hidden;
     page-break-inside: avoid;
   }
-  .invoice-table {
-    width: 100%;
-    border-collapse: collapse;
-    margin-bottom: 40px;
-  }
   .invoice-table th {
     text-align: left;
-    padding: 12px;
+    padding: 11px 14px;
     background: #f1f5f9;
-    border-bottom: 2px solid #cbd5e1;
-    font-weight: bold;
-    color: #334155;
+    border-bottom: 1px solid #e2e8f0;
+    font-weight: 700;
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: #475569;
   }
   .invoice-table td {
-    padding: 16px 12px;
-    border-bottom: 1px solid #e2e8f0;
+    padding: 14px;
+    border-bottom: 1px solid #eef2f7;
     vertical-align: top;
   }
+  .invoice-table tbody tr:nth-child(even) td { background: #fafbfc; }
+  .invoice-table tbody tr:last-child td { border-bottom: none; }
+  .invoice-table td strong { color: #1e293b; }
   .invoice-hint {
-    font-size: 12px;
+    font-size: 11.5px;
     color: #64748b;
     margin-top: 4px;
   }
   .invoice-table tfoot td {
-    border-top: 2px solid #94a3b8;
-    background: #f8fafc;
-    padding: 20px 12px;
+    border-top: 2px solid #3b82f6;
+    background: #eff6ff;
+    color: #0f172a;
+    padding: 18px 14px;
   }
   .text-green { color: #10b981; }
   .text-red { color: #ef4444; }
@@ -453,9 +549,9 @@ button.del:hover { color: var(--err); background: rgba(239, 68, 68, 0.1); }
     text-align: center;
     color: #94a3b8;
     font-size: 12px;
-    margin-top: 50px;
+    margin-top: 44px;
     border-top: 1px solid #e2e8f0;
-    padding-top: 20px;
+    padding-top: 18px;
   }
   
   /* Make sure leaflet prints */

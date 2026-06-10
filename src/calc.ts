@@ -135,12 +135,29 @@ export function calculate(
     }
 
     const activePersons = [...perPerson.values()].filter(p => p.personKm > 0 || p.personId === config.driverId);
-    
-    // Distribute Direct Cost
+
+    // Distribute the MAIN-ROUTE (direct) cost by how much of the main route each
+    // person actually uses — never by detour km. The driver benefits only from the
+    // direct route (their solo detour-driving km don't count), so their main-route
+    // usage is exactly the direct distance. A passenger's main-route usage is the km
+    // they rode minus the dropoff-detour they were aboard for (the pickup detour is
+    // driven before they board, so it is not part of their personKm). The detour cost
+    // is billed separately to the causing passengers below, so the driver pays nothing
+    // for detours others cause.
+    const directKm = directRoute.totalKm;
     let totalBaseWeight = 0;
     for (const p of activePersons) {
+      let mainKm: number;
+      if (p.personId === config.driverId) {
+        mainKm = directKm;
+      } else {
+        const fullDetour = passengerDetours?.[p.personId] || 0;
+        const stdDetour = passengerStandardDetours?.[p.personId] || 0;
+        const aboardDetour = Math.max(0, fullDetour - stdDetour); // dropoff-detour the passenger actually rode
+        mainKm = Math.min(Math.max(0, p.personKm - aboardDetour), directKm);
+      }
       const w = p.personId === config.driverId ? config.driverCostFactor : 1;
-      p.weight = p.personKm * w;
+      p.weight = mainKm * w;
       totalBaseWeight += p.weight;
     }
 
@@ -172,12 +189,17 @@ export function calculate(
       driverResult.dropoffDetourKm = 0;
     }
 
-    if (detourCost > 0) {
+    const totalDetourKm = Math.max(0, totalDistanceKm - directRoute.totalKm);
+
+    if (detourCost > 0 || totalDetourKm > 0) {
       for (const p of passengers) {
         if (sumStandalone > 0) {
-          p.detourCost = detourCost * ((p.detourKm || 0) / sumStandalone);
+          const ratio = (p.detourKm || 0) / sumStandalone;
+          p.detourCost = detourCost * ratio;
+          p.sharedDetourKm = totalDetourKm * ratio;
         } else {
           p.detourCost = detourCost / passengers.length;
+          p.sharedDetourKm = totalDetourKm / passengers.length;
         }
       }
     }

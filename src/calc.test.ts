@@ -127,6 +127,41 @@ describe("calculate – faire Aufteilung", () => {
     expect(c.fixedExtraCost).toBeCloseTo(6);
   });
 
+  it("Fahrer zahlt nur die Hauptroute – Abhol-Umweg trägt allein der Mitfahrer", () => {
+    // Direkt: A -> Ziel -> A = 100 km Landstraße (16 €).
+    // Tatsächlich: A fährt 20 km allein zum Abholen von B, danach 100 km gemeinsam.
+    const directRoute = {
+      legs: [{ from: "A", to: "A", distanceKm: 100, durationMin: 0, roadKm: km("landstrasse", 100) }],
+      totalKm: 100,
+      totalMin: 0,
+      waypointOrder: [],
+      geometry: null,
+    };
+    const segs: Segment[] = [
+      { id: "s1", label: "Abhol-Umweg", roadKm: km("landstrasse", 20), presentIds: [A] },
+      { id: "s2", label: "Hauptroute", roadKm: km("landstrasse", 100), presentIds: [A, B] },
+    ];
+    const passengerDetours = { [B]: 20 };
+    const passengerStandardDetours = { [B]: 20 };
+    const r = calculate(
+      cfg(),
+      [persons[0], persons[1]],
+      segs,
+      [],
+      directRoute as any,
+      passengerDetours,
+      passengerStandardDetours
+    );
+    const a = r.perPerson.find((p) => p.personId === A)!;
+    const b = r.perPerson.find((p) => p.personId === B)!;
+    // Gesamt 19.2 €, davon Direktkosten 16 € und Umweg 3.2 €.
+    expect(r.grandTotal).toBeCloseTo(19.2);
+    expect(a.detourCost).toBeCloseTo(0); // Fahrer zahlt nichts für den Umweg
+    expect(a.total).toBeCloseTo(8); // nur die halbe Hauptroute
+    expect(b.detourCost).toBeCloseTo(3.2); // voller Umweg
+    expect(b.total).toBeCloseTo(11.2); // halbe Hauptroute + Umweg
+  });
+
   it("ignoriert deaktivierte Zusatzkosten", () => {
     const segs: Segment[] = [
       { id: "s1", label: "S1", roadKm: km("landstrasse", 100), presentIds: [A] },

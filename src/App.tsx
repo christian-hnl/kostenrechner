@@ -7,7 +7,7 @@ import type { TripPlan } from "./trip";
 import { deletePerson, getPeople, savePerson, type PersonRecord } from "./db";
 import { PlacesInput } from "./components/PlacesInput";
 import { RouteMap } from "./components/RouteMap";
-import { BarChart } from "./components/BarChart";
+import { StackedBar, Donut, SegmentStrip, Legend, COST_COLORS, ROAD_COLORS } from "./components/Charts";
 import { Invoice } from "./components/Invoice";
 import { GeneralInvoice } from "./components/GeneralInvoice";
 import {
@@ -236,8 +236,8 @@ export function App() {
       setGeometry(plan.info.geometry);
       patch({ segments: plan.segments, directRoute: plan.directInfo, passengerDetours: plan.passengerDetours, passengerStandardDetours: plan.passengerStandardDetours });
       setRouteInfo({
-        km: plan.info.totalKm * (trip.roundTrip ? 2 : 1),
-        min: plan.info.totalMin * (trip.roundTrip ? 2 : 1),
+        km: plan.info.totalKm,
+        min: plan.info.totalMin,
       });
     } catch (e: any) {
       setRouteError(e.message ?? "Route konnte nicht berechnet werden.");
@@ -342,6 +342,36 @@ export function App() {
   const costPerKm = result.totalDistanceKm > 0 ? result.grandTotal / result.totalDistanceKm : 0;
   const durationLabel = routeInfo ? `${Math.floor(routeInfo.min / 60)} h ${Math.round(routeInfo.min % 60)} min` : "–";
   const maxPersonTotal = Math.max(0, ...result.perPerson.map((p) => p.total));
+
+  // ---------- Analyse-Kennzahlen ----------
+  const analysis = useMemo(() => {
+    const roadTotals: Record<RoadType, number> = { stadt: 0, dorf: 0, landstrasse: 0, autobahn: 0 };
+    for (const s of segments) {
+      roadTotals.stadt += s.roadKm.stadt;
+      roadTotals.dorf += s.roadKm.dorf;
+      roadTotals.landstrasse += s.roadKm.landstrasse;
+      roadTotals.autobahn += s.roadKm.autobahn;
+    }
+    const totalPersonKm = result.perPerson.reduce((sum, p) => sum + p.personKm, 0);
+    const avgOccupancy = result.totalDistanceKm > 0 ? totalPersonKm / result.totalDistanceKm : 0;
+    const directKm = state.directRoute?.totalKm ?? 0;
+    const detourKm = Math.max(0, result.totalDistanceKm - directKm);
+    const detourPct = directKm > 0 ? (detourKm / directKm) * 100 : 0;
+    const occSegments = segments
+      .map((s) => ({
+        km: segmentDistance(s),
+        count: s.presentIds.filter((id) => tripPersonIds.includes(id)).length,
+        label: s.label,
+      }))
+      .filter((s) => s.km > 0);
+    return { roadTotals, totalPersonKm, avgOccupancy, directKm, detourKm, detourPct, occSegments };
+  }, [segments, result.perPerson, result.totalDistanceKm, state.directRoute, tripPersonIds]);
+
+  const costComposition = [
+    { label: "Sprit", value: result.totalFuelCost, color: COST_COLORS.fuel },
+    { label: "Verschleiß", value: result.totalPerKmExtra, color: COST_COLORS.perKm },
+    { label: "Fixkosten", value: result.totalFixedExtra, color: COST_COLORS.fixed },
+  ];
 
   const [copied, setCopied] = useState(false);
   const copySummary = async () => {
@@ -616,6 +646,77 @@ export function App() {
             )}
           </section>
 
+          {segments.length > 0 && (
+            <section className="card">
+              <h2><RouteIcon /> Fahrt-Analyse</h2>
+              <div className="analysis-grid">
+                <div className="donut-wrap">
+                  <Donut parts={costComposition} centerLabel={eur(result.grandTotal)} centerSub="Gesamt" />
+                  <Legend
+                    items={[
+                      { label: "Sprit", color: COST_COLORS.fuel },
+                      { label: "Verschleiß", color: COST_COLORS.perKm },
+                      { label: "Fixkosten", color: COST_COLORS.fixed },
+                    ]}
+                  />
+                </div>
+                <div className="analysis-blocks">
+                  <div>
+                    <div className="analysis-block-title">Straßentypen</div>
+                    <StackedBar
+                      height={22}
+                      parts={[
+                        { label: "Stadt", value: analysis.roadTotals.stadt, color: ROAD_COLORS.stadt },
+                        { label: "Dorf", value: analysis.roadTotals.dorf, color: ROAD_COLORS.dorf },
+                        { label: "Landstraße", value: analysis.roadTotals.landstrasse, color: ROAD_COLORS.landstrasse },
+                        { label: "Autobahn", value: analysis.roadTotals.autobahn, color: ROAD_COLORS.autobahn },
+                      ]}
+                    />
+                    <Legend
+                      className="mt-8"
+                      items={[
+                        { label: `Stadt ${num(analysis.roadTotals.stadt)} km`, color: ROAD_COLORS.stadt },
+                        { label: `Dorf ${num(analysis.roadTotals.dorf)} km`, color: ROAD_COLORS.dorf },
+                        { label: `Land ${num(analysis.roadTotals.landstrasse)} km`, color: ROAD_COLORS.landstrasse },
+                        { label: `Autobahn ${num(analysis.roadTotals.autobahn)} km`, color: ROAD_COLORS.autobahn },
+                      ]}
+                    />
+                  </div>
+                  <div>
+                    <div className="analysis-block-title">Auslastungsprofil (Personen je Etappe)</div>
+                    <SegmentStrip segments={analysis.occSegments} />
+                  </div>
+                  <div className="stat-tiles">
+                    <div className="stat-tile">
+                      <div className="stat-label">Ø Auslastung</div>
+                      <div className="stat-value">{num(analysis.avgOccupancy, 2)}</div>
+                      <div className="stat-hint">Personen pro km</div>
+                    </div>
+                    <div className="stat-tile">
+                      <div className="stat-label">Umweg</div>
+                      <div className="stat-value" style={{ color: analysis.detourKm > 0 ? "var(--warn)" : "var(--good)" }}>
+                        {num(analysis.detourKm)} km
+                      </div>
+                      <div className="stat-hint">
+                        {analysis.directKm > 0 ? `+${num(analysis.detourPct, 0)}% ggü. Direktweg` : "kein Direktweg bekannt"}
+                      </div>
+                    </div>
+                    <div className="stat-tile">
+                      <div className="stat-label">Kosten / km</div>
+                      <div className="stat-value">{eur(costPerKm)}</div>
+                      <div className="stat-hint">Schnitt über alle</div>
+                    </div>
+                    <div className="stat-tile">
+                      <div className="stat-label">CO₂</div>
+                      <div className="stat-value">{num(co2, 1)} kg</div>
+                      <div className="stat-hint">{num(result.totalLiters, 1)} l verbraucht</div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          )}
+
           <section className="card">
             <h2><RouteIcon /> Etappen &amp; Mitfahrer</h2>
             <p className="hint">Automatisch aus der Route befüllt: km je Straßentyp und wer ab wo mitfährt. Alles editierbar.</p>
@@ -666,7 +767,39 @@ export function App() {
             {result.warnings.length > 0 && (
               <ul className="warnings">{result.warnings.map((w, i) => <li key={i}>⚠ {w}</li>)}</ul>
             )}
-            <BarChart format={eur} bars={result.perPerson.map((p) => ({ label: p.name, value: p.total, highlight: p.total === maxPersonTotal && maxPersonTotal > 0 }))} />
+            <div className="breakdown">
+              {result.perPerson
+                .filter((p) => p.total > 0 || p.personId === config.driverId)
+                .map((p) => (
+                  <div className="breakdown-row" key={p.personId}>
+                    <div className="breakdown-name">
+                      <span className="swatch" style={{ background: p.color }} />
+                      <span className="name-text">{p.name}</span>
+                    </div>
+                    <StackedBar
+                      total={maxPersonTotal}
+                      parts={[
+                        { label: "Sprit", value: p.fuelCost, color: COST_COLORS.fuel },
+                        { label: "Verschleiß", value: p.perKmExtraCost, color: COST_COLORS.perKm },
+                        { label: "Umweg", value: p.detourCost, color: COST_COLORS.detour },
+                        { label: "Fixkosten", value: p.fixedExtraCost, color: COST_COLORS.fixed },
+                      ]}
+                    />
+                    <div className="breakdown-total">
+                      {eur(p.finalTotal)}
+                      <small>{num(p.personKm)} km</small>
+                    </div>
+                  </div>
+                ))}
+              <Legend
+                items={[
+                  { label: "Sprit", color: COST_COLORS.fuel },
+                  { label: "Verschleiß", color: COST_COLORS.perKm },
+                  { label: "Umweg", color: COST_COLORS.detour },
+                  { label: "Fixkosten", color: COST_COLORS.fixed },
+                ]}
+              />
+            </div>
             <table className="result-table">
               <thead>
                 <tr>
@@ -770,12 +903,13 @@ export function App() {
 
       <div className="print-only">
         {printPersonId && printPersonId !== "ALL" && (
-          <Invoice 
-            person={result.perPerson.find(p => p.personId === printPersonId)!} 
+          <Invoice
+            person={result.perPerson.find(p => p.personId === printPersonId)!}
             allPersons={result.perPerson}
             tripPlan={lastPlan || undefined}
             geometry={geometry}
             grandTotal={result.grandTotal}
+            driverId={calcConfig.driverId}
           />
         )}
         {printPersonId === "ALL" && (
@@ -790,12 +924,13 @@ export function App() {
             />
             {result.perPerson.map(p => (
               <div key={p.personId} style={{ pageBreakBefore: "always", paddingTop: "20px" }}>
-                <Invoice 
-                  person={p} 
+                <Invoice
+                  person={p}
                   allPersons={result.perPerson}
                   tripPlan={lastPlan || undefined}
                   geometry={geometry}
                   grandTotal={result.grandTotal}
+                  driverId={calcConfig.driverId}
                 />
               </div>
             ))}
