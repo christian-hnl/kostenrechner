@@ -1,5 +1,5 @@
 import React from "react";
-import { MapContainer, TileLayer, Polyline, useMap } from "react-leaflet";
+import { MapContainer, TileLayer, Polyline, CircleMarker, Tooltip, useMap } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import type { TripPlan } from "../trip";
 import type { PersonResult } from "../types";
@@ -11,27 +11,48 @@ interface Props {
   lightMode?: boolean;
   highlightCostForPerson?: string;
   highlightSharedForPerson?: string;
+  driverId?: string | null;
 }
 
 function BoundsFitter({ latLngs }: { latLngs: [number, number][] }) {
   const map = useMap();
+  // Keep the latest bounds available to event handlers without re-binding them.
+  const latLngsRef = React.useRef(latLngs);
+  latLngsRef.current = latLngs;
+
   React.useEffect(() => {
-    if (latLngs.length === 0) return;
     const fit = () => {
-      map.invalidateSize();
-      map.fitBounds(latLngs, { padding: [20, 20], animate: false });
+      const pts = latLngsRef.current;
+      if (pts.length === 0) return;
+      // Read the container's current (e.g. narrower print) size synchronously
+      // before fitting, otherwise leaflet keeps a stale zoom and crops the route.
+      map.invalidateSize({ animate: false, pan: false });
+      map.fitBounds(pts, { padding: [30, 30], maxZoom: 15, animate: false });
     };
     fit();
     window.addEventListener('resize', fit);
-    // Also fit after a short delay for printing bounds adjustment
     setTimeout(fit, 100);
     setTimeout(fit, 500);
-    return () => window.removeEventListener('resize', fit);
-  }, [latLngs, map]);
+    setTimeout(fit, 1200);
+
+    // Re-fit right when print layout is applied so the whole route stays framed.
+    // The page width changes under @media print; without this leaflet keeps the
+    // on-screen center/zoom and crops the route in the PDF export.
+    window.addEventListener('beforeprint', fit);
+    const printMq = window.matchMedia('print');
+    const onMqChange = (e: MediaQueryListEvent) => { if (e.matches) fit(); };
+    printMq.addEventListener?.('change', onMqChange);
+
+    return () => {
+      window.removeEventListener('resize', fit);
+      window.removeEventListener('beforeprint', fit);
+      printMq.removeEventListener?.('change', onMqChange);
+    };
+  }, [map]);
   return null;
 }
 
-export function RouteMap({ tripPlan, geometry, persons, lightMode, highlightCostForPerson, highlightSharedForPerson }: Props) {
+export function RouteMap({ tripPlan, geometry, persons, lightMode, highlightCostForPerson, highlightSharedForPerson, driverId }: Props) {
   const tileUrl = lightMode
     ? "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
     : "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
@@ -44,9 +65,10 @@ export function RouteMap({ tripPlan, geometry, persons, lightMode, highlightCost
     return map;
   }, [persons]);
 
-  const { lines, bounds } = React.useMemo(() => {
+  const { lines, bounds, stops } = React.useMemo(() => {
     const linesArr: { id: string; positions: [number, number][]; color: string; dashArray?: string; dashOffset?: string; weight: number; isFallback?: boolean; isDirect?: boolean; opacity?: number }[] = [];
     const latLngsArr: [number, number][] = [];
+    const stopsArr: { pos: [number, number]; label: string; kind: "start" | "mid" | "end" }[] = [];
 
     // Always push ALL segments to bounds so the map ALWAYS frames the entire trip
     if (tripPlan?.segments) {
@@ -96,17 +118,44 @@ export function RouteMap({ tripPlan, geometry, persons, lightMode, highlightCost
       });
     }
 
-    if (highlightCostForPerson && tripPlan?.segments) {
+    const driverCostHighlight = !!(highlightCostForPerson && driverId && highlightCostForPerson === driverId);
+
+    if (driverCostHighlight && tripPlan) {
+      // The driver only pays for the main route — never for detours others cause.
+      // Draw the direct route as the driver's cost; the detours stay faint backbone.
+      const mainGeo = tripPlan.directInfo?.geometry;
+      if (mainGeo && mainGeo.coordinates) {
+        linesArr.push({
+          id: "driver-cost-main",
+          positions: toLatLngs(mainGeo.coordinates),
+          color: "#10b981",
+          weight: 7,
+          opacity: 0.95
+        });
+      } else if (tripPlan.segments) {
+        // Fallback (no direct geometry): flat green over the whole ridden route.
+        tripPlan.segments.forEach((seg) => {
+          if (!seg.geometry || !seg.geometry.coordinates) return;
+          linesArr.push({
+            id: `driver-cost-${seg.id}`,
+            positions: toLatLngs(seg.geometry.coordinates),
+            color: "#10b981",
+            weight: 6,
+            opacity: 0.9
+          });
+        });
+      }
+    } else if (highlightCostForPerson && tripPlan?.segments) {
       tripPlan.segments.forEach((seg) => {
         if (!seg.geometry || !seg.geometry.coordinates) return;
         if (!seg.presentIds.includes(highlightCostForPerson)) return;
         const positions = toLatLngs(seg.geometry.coordinates);
-        
+
         const share = 1 / seg.presentIds.length;
         let costColor = "#10b981"; // Green (cheap)
         if (share > 0.5) costColor = "#ef4444"; // Red (expensive)
         else if (share > 0.33) costColor = "#f59e0b"; // Orange
-        
+
         linesArr.push({
           id: `hl-cost-${seg.id}`,
           positions,
@@ -160,8 +209,27 @@ export function RouteMap({ tripPlan, geometry, persons, lightMode, highlightCost
       });
     }
 
-    return { lines: linesArr, bounds: latLngsArr };
-  }, [tripPlan, geometry, colors, lightMode, highlightCostForPerson, highlightSharedForPerson]);
+    // Derive stop markers from the segment endpoints so the route reads as an
+    // ordered sequence of places instead of an anonymous line.
+    if (tripPlan?.segments) {
+      const segs = tripPlan.segments.filter(s => s.geometry?.coordinates?.length);
+      if (segs.length) {
+        const fc = segs[0].geometry.coordinates[0];
+        stopsArr.push({ pos: [fc[1], fc[0]], label: segs[0].label.split("→")[0]?.trim() || "Start", kind: "start" });
+        segs.forEach((seg, i) => {
+          const cs = seg.geometry.coordinates;
+          const lc = cs[cs.length - 1];
+          stopsArr.push({
+            pos: [lc[1], lc[0]],
+            label: seg.label.split("→")[1]?.trim() || "",
+            kind: i === segs.length - 1 ? "end" : "mid",
+          });
+        });
+      }
+    }
+
+    return { lines: linesArr, bounds: latLngsArr, stops: stopsArr };
+  }, [tripPlan, geometry, colors, lightMode, highlightCostForPerson, highlightSharedForPerson, driverId]);
 
   return (
     <MapContainer
@@ -187,11 +255,28 @@ export function RouteMap({ tripPlan, geometry, persons, lightMode, highlightCost
             dashArray: l.dashArray,
             dashOffset: l.dashOffset,
             opacity: l.opacity ?? (l.isDirect ? 0.6 : 0.9),
-            lineCap: "square",
+            lineCap: "round",
             lineJoin: "round"
           }}
         />
       ))}
+
+      {stops.map((s, i) => {
+        const fill = s.kind === "start" ? "#10b981" : s.kind === "end" ? "#ef4444" : "#ffffff";
+        const stroke = s.kind === "mid" ? "#2563eb" : "#ffffff";
+        return (
+          <CircleMarker
+            key={`stop-${i}`}
+            center={s.pos}
+            radius={s.kind === "mid" ? 5 : 7}
+            pathOptions={{ color: stroke, weight: 2, fillColor: fill, fillOpacity: 1 }}
+          >
+            {s.label && (
+              <Tooltip direction="top" offset={[0, -6]}>{s.label}</Tooltip>
+            )}
+          </CircleMarker>
+        );
+      })}
 
       <BoundsFitter latLngs={bounds} />
 

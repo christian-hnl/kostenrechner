@@ -75,6 +75,7 @@ export interface PersonResult {
   perKmExtraCost: number;
   fixedExtraCost: number;
   detourCost: number;
+  sharedDetourKm?: number; // The proportionally shared detour km
   total: number;
   detourKm?: number;
   standardDetourKm?: number;

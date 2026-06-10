@@ -5,6 +5,19 @@ import type { Segment } from "./types";
 const uid = () => Math.random().toString(36).slice(2, 9);
 const shortAddr = (a: string) => a.split(",")[0]?.trim() || a;
 
+// Optimize the visiting order of a set of waypoints between a fixed origin and
+// destination (TSP via OSRM Trip API). Returns indices into `waypoints`.
+async function optimizeAddresses(
+  origin: string,
+  destination: string,
+  waypoints: string[],
+  routeOpts: { orsKey?: string; routeMode?: "fastest" | "shortest"; avoidHighways?: boolean }
+): Promise<number[]> {
+  if (waypoints.length <= 1) return waypoints.map((_, i) => i);
+  const info = await computeRoute({ origin, destination, waypoints, optimize: true, ...routeOpts });
+  return info.waypointOrder;
+}
+
 export interface TripPlan {
   segments: Segment[];
   info: RouteInfo;       // Actual route
@@ -58,6 +71,7 @@ export async function planTrip(opts: {
   }
 
   // 3. Build exact sequence of stops
+  const routeOpts = { orsKey, routeMode, avoidHighways };
   const stops: Stop[] = [];
   stops.push({ address: driver.homeAddress, label: `${driver.name} (Start)`, pickup: [driver.id], dropoff: [] });
 
@@ -65,13 +79,24 @@ export async function planTrip(opts: {
     stops.push({ address: p.homeAddress, label: `${p.name} (Abholung)`, pickup: [p.id], dropoff: [] });
   }
 
-  const atDestIds: string[] = [];
-  for (const p of orderedPassengers) {
-    if (p.outboundDropoff?.trim()) {
-      stops.push({ address: p.outboundDropoff.trim(), label: `${p.name} (Absetzen Hinweg)`, pickup: [], dropoff: [p.id] });
-    } else {
-      atDestIds.push(p.id);
-    }
+  // Outbound drop-offs: optimize the order of custom drop-off locations from the
+  // last pickup towards the destination, instead of blindly following pickup order.
+  const lastPickupAddr = orderedPassengers.length > 0
+    ? orderedPassengers[orderedPassengers.length - 1].homeAddress
+    : driver.homeAddress;
+
+  const dropoffPassengers = orderedPassengers.filter(p => p.outboundDropoff?.trim());
+  const atDestIds = orderedPassengers.filter(p => !p.outboundDropoff?.trim()).map(p => p.id);
+
+  const outOrder = await optimizeAddresses(
+    lastPickupAddr,
+    destination,
+    dropoffPassengers.map(p => p.outboundDropoff!.trim()),
+    routeOpts
+  );
+  for (const i of outOrder) {
+    const p = dropoffPassengers[i];
+    stops.push({ address: p.outboundDropoff!.trim(), label: `${p.name} (Absetzen Hinweg)`, pickup: [], dropoff: [p.id] });
   }
 
   if (!roundTrip) {
@@ -79,13 +104,33 @@ export async function planTrip(opts: {
   } else {
     stops.push({ address: destination, label: "Ziel", pickup: [], dropoff: [] });
 
-    const rev = [...orderedPassengers].reverse();
-    for (const p of rev) {
-      if (p.outboundDropoff?.trim()) {
-        stops.push({ address: p.outboundDropoff.trim(), label: `${p.name} (Rück-Abholung)`, pickup: [p.id], dropoff: [] });
-      }
+    // Return pickups (Rück-Abholung): only passengers dropped off on the way there,
+    // optimized from the destination towards the driver's home.
+    const returnPickupPassengers = orderedPassengers.filter(p => p.outboundDropoff?.trim());
+    const rpOrder = await optimizeAddresses(
+      destination,
+      driver.homeAddress,
+      returnPickupPassengers.map(p => p.outboundDropoff!.trim()),
+      routeOpts
+    );
+    const orderedReturnPickups = rpOrder.map(i => returnPickupPassengers[i]);
+    for (const p of orderedReturnPickups) {
+      stops.push({ address: p.outboundDropoff!.trim(), label: `${p.name} (Rück-Abholung)`, pickup: [p.id], dropoff: [] });
     }
-    for (const p of rev) {
+
+    // Return drop-offs (Rück-Absetzen): everyone, optimized from the last return
+    // pickup towards the driver's home.
+    const returnDropoffOrigin = orderedReturnPickups.length > 0
+      ? orderedReturnPickups[orderedReturnPickups.length - 1].outboundDropoff!.trim()
+      : destination;
+    const rdOrder = await optimizeAddresses(
+      returnDropoffOrigin,
+      driver.homeAddress,
+      orderedPassengers.map(p => p.returnDropoff?.trim() || p.homeAddress),
+      routeOpts
+    );
+    for (const i of rdOrder) {
+      const p = orderedPassengers[i];
       const dropAddr = p.returnDropoff?.trim() || p.homeAddress;
       stops.push({ address: dropAddr, label: `${p.name} (Rück-Absetzen)`, pickup: [], dropoff: [p.id] });
     }
