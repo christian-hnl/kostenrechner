@@ -1,4 +1,4 @@
-export type RoadType = "stadt" | "landstrasse" | "autobahn";
+export type RoadType = "stadt" | "dorf" | "landstrasse" | "autobahn";
 
 export type FuelType = "e5" | "e10" | "diesel";
 
@@ -10,6 +10,7 @@ export interface Person {
 /** Kilometer je Straßentyp – wird aus der Route automatisch erkannt, ist aber editierbar. */
 export interface RoadKm {
   stadt: number;
+  dorf: number;
   landstrasse: number;
   autobahn: number;
 }
@@ -21,10 +22,11 @@ export interface Segment {
   roadKm: RoadKm;
   /** IDs der Personen, die auf dieser Etappe im Auto sitzen (inkl. Fahrer). */
   presentIds: string[];
+  geometry?: any; // GeoJSON LineString for this segment
 }
 
 export function segmentDistance(seg: Segment): number {
-  return seg.roadKm.stadt + seg.roadKm.landstrasse + seg.roadKm.autobahn;
+  return seg.roadKm.stadt + seg.roadKm.dorf + seg.roadKm.landstrasse + seg.roadKm.autobahn;
 }
 
 /** Zusatzkosten neben dem reinen Sprit. Im UI einzeln an-/abschaltbar. */
@@ -44,6 +46,7 @@ export interface ExtraCost {
 
 export interface RoadMultipliers {
   stadt: number;
+  dorf: number;
   landstrasse: number;
   autobahn: number;
 }
@@ -56,9 +59,11 @@ export interface CalcConfig {
   /** Spritpreis €/l (z.B. günstigste Tankstelle via Tankerkönig). */
   pricePerLiter: number;
   driverId: string | null;
-  /** Zahlt der Fahrer bei den Spritkosten mit? */
-  driverPays: boolean;
+  /** Faktor für den Fahrer (0 = zahlt nichts, 1 = zahlt voll mit). */
+  driverCostFactor: number;
   fuelType: FuelType;
+  sponsorId?: string | null;
+  sponsorPercent?: number;
 }
 
 export interface PersonResult {
@@ -69,7 +74,15 @@ export interface PersonResult {
   fuelCost: number;
   perKmExtraCost: number;
   fixedExtraCost: number;
+  detourCost: number;
   total: number;
+  detourKm?: number;
+  standardDetourKm?: number;
+  dropoffDetourKm?: number;
+  sponsorBonus: number; // positive means they pay for others, negative means they receive a discount
+  finalTotal: number; // total + sponsorBonus
+  color: string; // Color for the map
+  extraDetails: { label: string; amount: number }[]; // Detailed list of fixed extra costs
 }
 
 export interface SegmentResult {
@@ -91,6 +104,8 @@ export interface CalcResult {
   totalFuelCost: number;
   totalPerKmExtra: number;
   totalFixedExtra: number;
+  directFuelCost: number;
+  detourCost: number;
   grandTotal: number;
   warnings: string[];
 }

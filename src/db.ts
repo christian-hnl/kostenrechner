@@ -5,6 +5,8 @@ export interface PersonRecord {
   id: string;
   name: string;
   homeAddress: string;
+  outboundDropoff?: string;
+  returnDropoff?: string;
   lat?: number;
   lng?: number;
 }

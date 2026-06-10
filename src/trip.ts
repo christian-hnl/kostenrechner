@@ -1,5 +1,5 @@
 import type { PersonRecord } from "./db";
-import { computeRoute, type RouteInfo } from "./googleMaps";
+import { computeRoute, type RouteInfo } from "./routing";
 import type { Segment } from "./types";
 
 const uid = () => Math.random().toString(36).slice(2, 9);
@@ -7,69 +7,190 @@ const shortAddr = (a: string) => a.split(",")[0]?.trim() || a;
 
 export interface TripPlan {
   segments: Segment[];
-  info: RouteInfo;
-  /** Mitfahrer in optimierter Abhol-Reihenfolge. */
+  info: RouteInfo;       // Actual route
+  directInfo: RouteInfo; // Direct route for fair cost splitting
   orderedPassengers: PersonRecord[];
+  passengerDetours: Record<string, number>;
+  passengerStandardDetours: Record<string, number>;
 }
 
-/**
- * Plant eine Fahrt vollautomatisch:
- * Start = Wohnort des Fahrers, Wegpunkte = Wohnorte der Mitfahrer (Abholpunkte), dann Ziel.
- * Jeder Mitfahrer sitzt ab seinem Abholpunkt bis zum Ziel im Auto – daraus ergibt sich
- * automatisch, wer wie viele Kilometer fährt (faire Aufteilung).
- */
+interface Stop {
+  address: string;
+  label: string;
+  pickup: string[];
+  dropoff: string[];
+}
+
 export async function planTrip(opts: {
-  google: typeof google;
   driver: PersonRecord;
   passengers: PersonRecord[];
   destination: string;
   roundTrip: boolean;
+  orsKey?: string;
+  routeMode?: "fastest" | "shortest";
+  avoidHighways?: boolean;
 }): Promise<TripPlan> {
-  const { driver, passengers, destination, roundTrip } = opts;
+  const { driver, passengers, destination, roundTrip, orsKey, routeMode, avoidHighways } = opts;
 
-  const info = await computeRoute({
-    google: opts.google,
+  // 1. Direct Route (Driver -> Destination and back if roundTrip)
+  const directWps = roundTrip ? [destination] : [];
+  const directDest = roundTrip ? driver.homeAddress : destination;
+
+  const directInfo = await computeRoute({
     origin: driver.homeAddress,
-    destination,
-    waypoints: passengers.map((p) => p.homeAddress),
-    optimize: true,
+    destination: directDest,
+    waypoints: directWps,
+    optimize: false,
+    orsKey, routeMode, avoidHighways
   });
 
-  const orderedPassengers = info.waypointOrder.map((i) => passengers[i]).filter(Boolean);
-  const n = orderedPassengers.length;
-  const legs = info.legs; // n + 1 Teilstrecken (Fahrer → P1 → … → Ziel)
-  const destShort = shortAddr(destination);
-
-  const outStops = [`${driver.name} (Start)`, ...orderedPassengers.map((p) => p.name), destShort];
-
-  const segments: Segment[] = [];
-
-  // Hinfahrt: auf Etappe k sitzen Fahrer + die ersten k Mitfahrer im Auto.
-  for (let k = 0; k <= n; k++) {
-    const leg = legs[k];
-    if (!leg) continue;
-    segments.push({
-      id: uid(),
-      label: `${outStops[k]} → ${outStops[k + 1]}`,
-      roadKm: { ...leg.roadKm },
-      presentIds: [driver.id, ...orderedPassengers.slice(0, k).map((p) => p.id)],
+  // 2. Determine optimized pickup order
+  let orderedPassengers = [...passengers];
+  if (passengers.length > 1) {
+    const pickupInfo = await computeRoute({
+      origin: driver.homeAddress,
+      destination,
+      waypoints: passengers.map(p => p.homeAddress),
+      optimize: true,
+      orsKey, routeMode, avoidHighways
     });
+    orderedPassengers = pickupInfo.waypointOrder.map(i => passengers[i]).filter(Boolean);
   }
 
-  // Rückfahrt: gespiegelt – beim Ziel steigen alle ein, jeder wird an seinem Wohnort abgesetzt.
-  if (roundTrip) {
-    const retStops = [destShort, ...[...orderedPassengers].reverse().map((p) => p.name), `${driver.name} (Ziel)`];
-    for (let j = 0; j <= n; j++) {
-      const leg = legs[n - j];
-      if (!leg) continue;
+  // 3. Build exact sequence of stops
+  const stops: Stop[] = [];
+  stops.push({ address: driver.homeAddress, label: `${driver.name} (Start)`, pickup: [driver.id], dropoff: [] });
+
+  for (const p of orderedPassengers) {
+    stops.push({ address: p.homeAddress, label: `${p.name} (Abholung)`, pickup: [p.id], dropoff: [] });
+  }
+
+  const atDestIds: string[] = [];
+  for (const p of orderedPassengers) {
+    if (p.outboundDropoff?.trim()) {
+      stops.push({ address: p.outboundDropoff.trim(), label: `${p.name} (Absetzen Hinweg)`, pickup: [], dropoff: [p.id] });
+    } else {
+      atDestIds.push(p.id);
+    }
+  }
+
+  if (!roundTrip) {
+    stops.push({ address: destination, label: "Ziel", pickup: [], dropoff: atDestIds });
+  } else {
+    stops.push({ address: destination, label: "Ziel", pickup: [], dropoff: [] });
+
+    const rev = [...orderedPassengers].reverse();
+    for (const p of rev) {
+      if (p.outboundDropoff?.trim()) {
+        stops.push({ address: p.outboundDropoff.trim(), label: `${p.name} (Rück-Abholung)`, pickup: [p.id], dropoff: [] });
+      }
+    }
+    for (const p of rev) {
+      const dropAddr = p.returnDropoff?.trim() || p.homeAddress;
+      stops.push({ address: dropAddr, label: `${p.name} (Rück-Absetzen)`, pickup: [], dropoff: [p.id] });
+    }
+    stops.push({ address: driver.homeAddress, label: `${driver.name} (Ziel)`, pickup: [], dropoff: [driver.id] });
+  }
+
+  // Combine adjacent stops with the exact same address to avoid 0km legs
+  const mergedStops: Stop[] = [];
+  for (const s of stops) {
+    if (mergedStops.length > 0 && mergedStops[mergedStops.length - 1].address === s.address) {
+      const prev = mergedStops[mergedStops.length - 1];
+      prev.label += ` & ${s.label}`;
+      prev.pickup.push(...s.pickup);
+      prev.dropoff.push(...s.dropoff);
+    } else {
+      mergedStops.push(s);
+    }
+  }
+
+  // 4. Calculate final actual route
+  const actualOrigin = mergedStops[0].address;
+  const actualDest = mergedStops[mergedStops.length - 1].address;
+  const actualWaypoints = mergedStops.slice(1, -1).map(s => s.address);
+
+  const info = await computeRoute({
+    origin: actualOrigin,
+    destination: actualDest,
+    waypoints: actualWaypoints,
+    optimize: false,
+    orsKey, routeMode, avoidHighways
+  });
+
+  // 4b. Calculate standalone detours for each passenger
+  const passengerDetours: Record<string, number> = {};
+  const passengerStandardDetours: Record<string, number> = {};
+  if (passengers.length > 0) {
+    const promises = passengers.map(async (p) => {
+      // 1. Spezial-Umweg (Full Route with custom dropoffs)
+      const wps: string[] = [];
+      wps.push(p.homeAddress);
+      if (p.outboundDropoff?.trim()) wps.push(p.outboundDropoff.trim());
+      
+      let finalDest = destination;
+      if (roundTrip) {
+        if (p.outboundDropoff?.trim()) wps.push(destination, p.outboundDropoff.trim());
+        else wps.push(destination);
+        const dropAddr = p.returnDropoff?.trim() || p.homeAddress;
+        wps.push(dropAddr);
+        finalDest = driver.homeAddress;
+      }
+      
+      const pInfoPromise = computeRoute({
+        origin: driver.homeAddress,
+        destination: finalDest,
+        waypoints: wps,
+        optimize: false,
+        orsKey, routeMode, avoidHighways
+      });
+
+      // 2. Standard-Umweg (nur Abholung Wohnort)
+      const stdWps: string[] = [p.homeAddress];
+      let stdDest = destination;
+      if (roundTrip) {
+        stdWps.push(destination, p.homeAddress);
+        stdDest = driver.homeAddress;
+      }
+      const pStdPromise = computeRoute({
+        origin: driver.homeAddress,
+        destination: stdDest,
+        waypoints: stdWps,
+        optimize: false,
+        orsKey, routeMode, avoidHighways
+      });
+      
+      const [pInfo, pStd] = await Promise.all([pInfoPromise, pStdPromise]);
+      
+      passengerDetours[p.id] = Math.max(0, pInfo.totalKm - directInfo.totalKm);
+      passengerStandardDetours[p.id] = Math.max(0, pStd.totalKm - directInfo.totalKm);
+    });
+    await Promise.all(promises);
+  }
+
+  // 5. Build segments & simulate who is in the car
+  const segments: Segment[] = [];
+  const inCar = new Set<string>();
+  inCar.add(driver.id);
+
+  for (let i = 0; i < info.legs.length; i++) {
+    const stop = mergedStops[i];
+    stop.dropoff.forEach(id => inCar.delete(id));
+    stop.pickup.forEach(id => inCar.add(id));
+    
+    const presentIds = Array.from(inCar);
+    const leg = info.legs[i];
+    
+    if (leg && leg.distanceKm > 0) {
       segments.push({
         id: uid(),
-        label: `${retStops[j]} → ${retStops[j + 1]} (zurück)`,
+        label: `${shortAddr(mergedStops[i].address)} → ${shortAddr(mergedStops[i+1].address)}`,
         roadKm: { ...leg.roadKm },
-        presentIds: [driver.id, ...orderedPassengers.slice(0, n - j).map((p) => p.id)],
+        presentIds,
+        geometry: leg.geometry
       });
     }
   }
 
-  return { segments, info, orderedPassengers };
+  return { segments, info, directInfo, orderedPassengers, passengerDetours, passengerStandardDetours };
 }

@@ -1,12 +1,15 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { calculate } from "./calc";
-import { cheapestOpen, fetchStations, type Station } from "./tankerkoenig";
-import { loadGoogleMaps } from "./googleMaps";
+import { cheapestOpen, fetchStations, type Station } from "./spritpreisrechner";
+import { FuelMap } from "./components/FuelMap";
 import { planTrip } from "./trip";
+import type { TripPlan } from "./trip";
 import { deletePerson, getPeople, savePerson, type PersonRecord } from "./db";
 import { PlacesInput } from "./components/PlacesInput";
 import { RouteMap } from "./components/RouteMap";
 import { BarChart } from "./components/BarChart";
+import { Invoice } from "./components/Invoice";
+import { GeneralInvoice } from "./components/GeneralInvoice";
 import {
   CarIcon,
   ClockIcon,
@@ -24,6 +27,7 @@ const uid = () => Math.random().toString(36).slice(2, 9);
 
 const ROAD_LABELS: Record<RoadType, string> = {
   stadt: "Stadt",
+  dorf: "Dorf",
   landstrasse: "Landstraße",
   autobahn: "Autobahn",
 };
@@ -34,28 +38,33 @@ const FUEL_LABELS: Record<FuelType, string> = {
 };
 const CO2_PER_L: Record<FuelType, number> = { e5: 2.37, e10: 2.32, diesel: 2.65 };
 
-const eur = (n: number) => n.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
-const num = (n: number, d = 1) =>
+export const eur = (n: number) => n.toLocaleString("de-DE", { style: "currency", currency: "EUR" });
+export const num = (n: number, d = 1) =>
   n.toLocaleString("de-DE", { minimumFractionDigits: d, maximumFractionDigits: d });
 
 interface AppState {
   config: CalcConfig;
   extras: ExtraCost[];
   tk: { lat: string; lng: string; radiusKm: number };
-  keys: { gmaps: string; tankerkoenig: string };
   trip: { driverId: string | null; passengerIds: string[]; destination: string; roundTrip: boolean };
   segments: Segment[];
+  directRoute?: any;
+  passengerDetours?: Record<string, number>;
+  passengerStandardDetours?: Record<string, number>;
+  orsKey?: string;
+  routeMode?: "fastest" | "shortest";
+  avoidHighways?: boolean;
 }
 
 function defaultState(): AppState {
   return {
     config: {
       baseConsumption: 7,
-      roadMultipliers: { stadt: 1.3, landstrasse: 1.0, autobahn: 1.25 },
+      roadMultipliers: { stadt: 1.3, dorf: 1.15, landstrasse: 1.0, autobahn: 1.25 },
       pricePerLiter: 1.75,
       driverId: null,
-      driverPays: true,
-      fuelType: "e10",
+      driverCostFactor: 1,
+      fuelType: "e5",
     },
     extras: [
       { id: uid(), label: "Verschleiß/Service", enabled: false, mode: "perKm", amount: 0.1 },
@@ -63,7 +72,6 @@ function defaultState(): AppState {
       { id: uid(), label: "Parken", enabled: false, mode: "fixed", amount: 0, fixedSplit: "gleich" },
     ],
     tk: { lat: "", lng: "", radiusKm: 5 },
-    keys: { gmaps: "", tankerkoenig: "" },
     trip: { driverId: null, passengerIds: [], destination: "", roundTrip: true },
     segments: [],
   };
@@ -77,12 +85,22 @@ function loadState(): AppState {
     if (raw) {
       const parsed = JSON.parse(raw);
       const d = defaultState();
+      
+      // Migrate old state to support dorf
+      if (parsed.config?.roadMultipliers && parsed.config.roadMultipliers.dorf === undefined) {
+        parsed.config.roadMultipliers.dorf = 1.15;
+      }
+      if (parsed.segments) {
+        for (const s of parsed.segments) {
+          if (s.roadKm && s.roadKm.dorf === undefined) s.roadKm.dorf = 0;
+        }
+      }
+      
       return {
         ...d,
         ...parsed,
         config: { ...d.config, ...parsed.config },
         trip: { ...d.trip, ...parsed.trip },
-        keys: { ...d.keys, ...parsed.keys },
         tk: { ...d.tk, ...parsed.tk },
       };
     }
@@ -94,7 +112,7 @@ function loadState(): AppState {
 
 export function App() {
   const [state, setState] = useState<AppState>(loadState);
-  const { config, extras, tk, keys, trip, segments } = state;
+  const { config, extras, tk, trip, segments } = state;
   const [people, setPeople] = useState<PersonRecord[]>([]);
 
   useEffect(() => {
@@ -121,10 +139,10 @@ export function App() {
                 ...s,
                 trip: { ...s.trip, driverId: anna.id, passengerIds: [ben.id], destination: "München" },
                 segments: [
-                  { id: uid(), label: "Anna (Start) → Ben abholen", roadKm: { stadt: 5, landstrasse: 25, autobahn: 160 }, presentIds: [anna.id] },
-                  { id: uid(), label: "Ben → München", roadKm: { stadt: 10, landstrasse: 40, autobahn: 300 }, presentIds: [anna.id, ben.id] },
-                  { id: uid(), label: "München → Ben (zurück)", roadKm: { stadt: 10, landstrasse: 40, autobahn: 300 }, presentIds: [anna.id, ben.id] },
-                  { id: uid(), label: "Ben → Anna (zurück)", roadKm: { stadt: 5, landstrasse: 25, autobahn: 160 }, presentIds: [anna.id] },
+                  { id: uid(), label: "Anna (Start) → Ben abholen", roadKm: { stadt: 5, dorf: 2, landstrasse: 25, autobahn: 160 }, presentIds: [anna.id] },
+                  { id: uid(), label: "Ben → München", roadKm: { stadt: 10, dorf: 0, landstrasse: 40, autobahn: 300 }, presentIds: [anna.id, ben.id] },
+                  { id: uid(), label: "München → Ben (zurück)", roadKm: { stadt: 10, dorf: 0, landstrasse: 40, autobahn: 300 }, presentIds: [anna.id, ben.id] },
+                  { id: uid(), label: "Ben → Anna (zurück)", roadKm: { stadt: 5, dorf: 2, landstrasse: 25, autobahn: 160 }, presentIds: [anna.id] },
                 ],
               },
         );
@@ -170,21 +188,29 @@ export function App() {
         : [...trip.passengerIds, id],
     });
 
-  // ---------- Google Maps / Routenplanung ----------
-  const [g, setG] = useState<typeof google | null>(null);
-  const [directions, setDirections] = useState<google.maps.DirectionsResult | null>(null);
+  // ---------- Routenplanung ----------
+  const [geometry, setGeometry] = useState<any>(null);
   const [routeBusy, setRouteBusy] = useState(false);
   const [routeError, setRouteError] = useState<string | null>(null);
   const [routeInfo, setRouteInfo] = useState<{ km: number; min: number } | null>(null);
+  const [lastPlan, setLastPlan] = useState<TripPlan | null>(null);
+  const [printPersonId, setPrintPersonId] = useState<string | null>(null);
 
+  // Focus specific person print
   useEffect(() => {
-    if (!keys.gmaps) return;
-    loadGoogleMaps(keys.gmaps).then(setG).catch((e) => setRouteError(e.message));
-  }, [keys.gmaps]);
+    if (printPersonId !== null) {
+      // Force leaflet map to invalidate size and tiles to load
+      window.dispatchEvent(new Event('resize'));
+      setTimeout(() => {
+        window.print();
+        setPrintPersonId(null);
+      }, 2500); // Wait longer for all 9 maps (1 general + 8 individual) to render and load tiles
+    }
+  }, [printPersonId]);
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
 
   const planTripHandler = async () => {
     setRouteError(null);
-    if (!keys.gmaps) return setRouteError("Bitte einen Google-Maps-API-Key eintragen (Einstellungen).");
     const driver = people.find((p) => p.id === trip.driverId);
     if (!driver) return setRouteError("Bitte einen Fahrer auswählen.");
     if (!driver.homeAddress.trim()) return setRouteError(`Wohnort von ${driver.name} fehlt.`);
@@ -197,17 +223,18 @@ export function App() {
 
     setRouteBusy(true);
     try {
-      const gm = g ?? (await loadGoogleMaps(keys.gmaps));
-      if (!g) setG(gm);
       const plan = await planTrip({
-        google: gm,
         driver,
         passengers,
         destination: trip.destination,
         roundTrip: trip.roundTrip,
+        orsKey: state.orsKey,
+        routeMode: state.routeMode || "fastest",
+        avoidHighways: state.avoidHighways || false,
       });
-      setDirections(plan.info.result);
-      patch({ segments: plan.segments });
+      setLastPlan(plan);
+      setGeometry(plan.info.geometry);
+      patch({ segments: plan.segments, directRoute: plan.directInfo, passengerDetours: plan.passengerDetours, passengerStandardDetours: plan.passengerStandardDetours });
       setRouteInfo({
         km: plan.info.totalKm * (trip.roundTrip ? 2 : 1),
         min: plan.info.totalMin * (trip.roundTrip ? 2 : 1),
@@ -233,7 +260,7 @@ export function App() {
     patch({
       segments: [
         ...segments,
-        { id: uid(), label: `Etappe ${segments.length + 1}`, roadKm: { stadt: 0, landstrasse: 0, autobahn: 0 }, presentIds: tripPersonIds },
+        { id: uid(), label: `Etappe ${segments.length + 1}`, roadKm: { stadt: 0, dorf: 0, landstrasse: 0, autobahn: 0 }, presentIds: tripPersonIds },
       ],
     });
   const togglePresence = (segId: string, personId: string) =>
@@ -277,14 +304,13 @@ export function App() {
     setTkError(null);
     const lat = parseFloat(tk.lat);
     const lng = parseFloat(tk.lng);
-    if (!keys.tankerkoenig) return setTkError("Bitte Tankerkönig-API-Key eintragen.");
     if (!isFinite(lat) || !isFinite(lng)) return setTkError("Bitte gültige Koordinaten angeben.");
     abortRef.current?.abort();
     const ctrl = new AbortController();
     abortRef.current = ctrl;
     setTkLoading(true);
     try {
-      const list = await fetchStations({ apiKey: keys.tankerkoenig, lat, lng, radiusKm: tk.radiusKm, fuelType: config.fuelType, signal: ctrl.signal });
+      const list = await fetchStations({ lat, lng, fuelType: config.fuelType, signal: ctrl.signal });
       setStations(list);
       const cheapest = cheapestOpen(list);
       if (cheapest) patchConfig({ pricePerLiter: cheapest.price });
@@ -309,8 +335,8 @@ export function App() {
 
   const calcConfig = useMemo(() => ({ ...config, driverId: trip.driverId }), [config, trip.driverId]);
   const result = useMemo(
-    () => calculate(calcConfig, tripPersons, segments, extras),
-    [calcConfig, tripPersons, segments, extras],
+    () => calculate(calcConfig, people, segments, extras, state.directRoute, state.passengerDetours, state.passengerStandardDetours),
+    [calcConfig, people, segments, extras, state.directRoute, state.passengerDetours, state.passengerStandardDetours],
   );
   const co2 = result.totalLiters * CO2_PER_L[config.fuelType];
   const costPerKm = result.totalDistanceKm > 0 ? result.grandTotal / result.totalDistanceKm : 0;
@@ -337,7 +363,8 @@ export function App() {
   const passengerChoices = people.filter((p) => p.id !== trip.driverId);
 
   return (
-    <div className="app">
+    <Fragment>
+      <div className="app">
       <header className="topbar">
         <div className="brand">
           <CarIcon size={22} />
@@ -350,10 +377,9 @@ export function App() {
           <button type="button" onClick={copySummary}>{copied ? "Kopiert ✓" : "Zusammenfassung kopieren"}</button>
           <button type="button" className="ghost" onClick={() => {
             if (confirm("Eingaben (ohne gespeicherte Personen) zurücksetzen?")) {
-              localStorage.removeItem(STORAGE_KEY);
-              setState(defaultState());
+              setState(s => ({ ...defaultState(), orsKey: s.orsKey, routeMode: s.routeMode, avoidHighways: s.avoidHighways }));
               setStations([]);
-              setDirections(null);
+              setGeometry(null);
               setRouteInfo(null);
             }
           }}>Zurücksetzen</button>
@@ -366,7 +392,7 @@ export function App() {
           <section className="card">
             <h2><RouteIcon /> Fahrt planen</h2>
             <label>Ziel
-              <PlacesInput google={g} value={trip.destination} placeholder="Zieladresse"
+              <PlacesInput value={trip.destination} placeholder="Zieladresse"
                 onChange={(v) => patchTrip({ destination: v })} />
             </label>
             <label>Fahrer
@@ -390,29 +416,93 @@ export function App() {
               <button type="button" className={trip.roundTrip ? "" : "active"} onClick={() => patchTrip({ roundTrip: false })}>Nur Hinfahrt</button>
               <button type="button" className={trip.roundTrip ? "active" : ""} onClick={() => patchTrip({ roundTrip: true })}>Hin &amp; zurück</button>
             </div>
-            <label className="check">
-              <input type="checkbox" checked={config.driverPays} onChange={(e) => patchConfig({ driverPays: e.target.checked })} />
-              Fahrer zahlt bei den Spritkosten mit
+            <label>
+              Kostenfaktor Fahrer: {Math.round(config.driverCostFactor * 100)}%
+              <input type="range" min="0" max="1" step="0.05" value={config.driverCostFactor}
+                onChange={(e) => patchConfig({ driverCostFactor: parseFloat(e.target.value) })} />
+              <span className="hint" style={{marginTop: "-4px"}}>100% = Fahrer zahlt regulär. 0% = Fahrer fährt kostenlos.</span>
             </label>
-            <div className="btn-row">
+            <div className="btn-row" style={{marginTop: "1rem"}}>
               <button type="button" className="primary block" onClick={planTripHandler} disabled={routeBusy}>
-                {routeBusy ? "Route wird berechnet…" : "Fahrt berechnen"}
+                {routeBusy ? "Berechne..." : "Route & Kosten berechnen"}
               </button>
+              {result && (
+                <button type="button" className="block ghost" style={{ border: "1px solid var(--input-border)" }} onClick={() => setPrintPersonId("ALL")}>
+                  🖨️ Allgemeine Übersicht (PDF)
+                </button>
+              )}
             </div>
-            {routeError && <p className="error">{routeError}</p>}
-            {!keys.gmaps && <p className="hint">Google-Maps-API-Key unter „Einstellungen" eintragen für Routing &amp; Karte.</p>}
           </section>
+          
+          <div className="card">
+            <label style={{ marginBottom: "1rem", display: "block" }}>
+              <strong style={{ color: "var(--accent)", fontSize: "1.05rem" }}>Kosten tilgen (Sponsoring)</strong>
+              <div className="hint" style={{ marginTop: "4px" }}>Wer übernimmt die Kosten für andere?</div>
+            </label>
+            <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.2rem", marginBottom: "0.5rem" }}>
+              <select
+                value={config.sponsorId || ""}
+                onChange={(e) => patchConfig({ sponsorId: e.target.value || null })}
+                style={{ flex: 1 }}
+              >
+                <option value="">Kein Sponsor</option>
+                {tripPersons.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+              {config.sponsorId && (
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <input
+                    type="range"
+                    min="0"
+                    max="100"
+                    value={config.sponsorPercent || 0}
+                    onChange={(e) => patchConfig({ sponsorPercent: parseInt(e.target.value) || 0 })}
+                  />
+                  <span>{config.sponsorPercent || 0}%</span>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="card">
+            <h2>⚙️ Profi-Routing (Optional)</h2>
+            <p className="hint" style={{marginBottom: "12px"}}>Für Spezialfunktionen wird ein kostenloser OpenRouteService API-Key benötigt.</p>
+            <label>
+              OpenRouteService API Key
+              <input type="text" value={state.orsKey || ""} onChange={e => patch({ orsKey: e.target.value })} placeholder="Token hier einfügen..." />
+            </label>
+            {state.orsKey && state.orsKey.trim().length > 10 && (
+              <div style={{ marginTop: "1rem", display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+                <label className="check" style={{ margin: 0 }}>
+                  <input type="checkbox" checked={state.routeMode === "shortest"} onChange={e => patch({ routeMode: e.target.checked ? "shortest" : "fastest" })} />
+                  Kürzester Weg (statt schnellster)
+                </label>
+                <label className="check" style={{ margin: 0 }}>
+                  <input type="checkbox" checked={state.avoidHighways} onChange={e => patch({ avoidHighways: e.target.checked })} />
+                  Autobahn vermeiden
+                </label>
+              </div>
+            )}
+            {routeError && <p className="error">{routeError}</p>}
+          </div>
 
           {/* Gespeicherte Personen */}
           <section className="card">
             <h2><UsersIcon /> Gespeicherte Personen</h2>
             <p className="hint">Name + Wohnort einmal speichern – danach einfach oben auswählen. Gespeichert in der lokalen Datenbank (IndexedDB).</p>
             {people.map((p) => (
-              <div className="db-person" key={p.id}>
-                <input className="db-name" value={p.name} placeholder="Name"
-                  onChange={(e) => updatePersonRecord(p.id, { name: e.target.value })} />
-                <PlacesInput google={g} value={p.homeAddress} placeholder="Wohnort / Adresse"
-                  onChange={(v) => updatePersonRecord(p.id, { homeAddress: v })} />
+              <div className="db-person" key={p.id} style={{ alignItems: "flex-start" }}>
+                <div style={{ flex: "0 0 100px" }}>
+                  <input className="db-name" value={p.name || ""} placeholder="Name"
+                    onChange={(e) => updatePersonRecord(p.id, { name: e.target.value })} />
+                </div>
+                <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: "8px" }}>
+                  <PlacesInput value={p.homeAddress} placeholder="Wohnort / Abholort"
+                    onChange={(v) => updatePersonRecord(p.id, { homeAddress: v })} />
+                  <PlacesInput value={p.outboundDropoff || ""} placeholder="Absetz-Ort Hinweg (leer = Ziel)"
+                    onChange={(v) => updatePersonRecord(p.id, { outboundDropoff: v })} />
+                  <PlacesInput value={p.returnDropoff || ""} placeholder="Absetz-Ort Rückweg (leer = Wohnort)"
+                    onChange={(v) => updatePersonRecord(p.id, { returnDropoff: v })} />
+                </div>
                 <button type="button" className="del" onClick={() => removePersonRecord(p.id)}>✕</button>
               </div>
             ))}
@@ -452,12 +542,12 @@ export function App() {
 
           {/* Tankstelle */}
           <section className="card">
-            <h2><EuroIcon /> Günstigste Tankstelle</h2>
-            <p className="hint">Via Tankerkönig: günstigste offene Tankstelle im Umkreis wird als Spritpreis übernommen.</p>
+            <h2><EuroIcon /> Günstigste Tankstelle (E-Control Österreich)</h2>
+            <p className="hint">Kostenlose und öffentliche API. Die günstigste Tankstelle wird als Spritpreis übernommen.</p>
             <div className="row">
-              <label>Breite (lat)<input type="text" value={tk.lat} placeholder="52.52" onChange={(e) => patch({ tk: { ...tk, lat: e.target.value } })} /></label>
-              <label>Länge (lng)<input type="text" value={tk.lng} placeholder="13.405" onChange={(e) => patch({ tk: { ...tk, lng: e.target.value } })} /></label>
-              <label>Umkreis km<input type="number" min="1" max="25" value={tk.radiusKm} onChange={(e) => patch({ tk: { ...tk, radiusKm: parseInt(e.target.value) || 1 } })} /></label>
+              <label>Breite (lat)<input type="text" value={tk.lat || ""} placeholder="52.52" onChange={(e) => patch({ tk: { ...tk, lat: e.target.value } })} /></label>
+              <label>Länge (lng)<input type="text" value={tk.lng || ""} placeholder="13.405" onChange={(e) => patch({ tk: { ...tk, lng: e.target.value } })} /></label>
+              <label>Umkreis km<input type="number" min="1" max="25" value={tk.radiusKm || 5} onChange={(e) => patch({ tk: { ...tk, radiusKm: parseInt(e.target.value) || 1 } })} /></label>
             </div>
             <div className="btn-row">
               <button type="button" onClick={useGeolocation}>Standort nutzen</button>
@@ -473,6 +563,11 @@ export function App() {
                   </li>
                 ))}
               </ul>
+            )}
+            {stations.length > 0 && tk.lat && tk.lng && (
+              <div style={{ marginTop: "1rem", zIndex: 0, position: "relative" }}>
+                <FuelMap center={{ lat: parseFloat(tk.lat), lng: parseFloat(tk.lng) }} stations={stations} />
+              </div>
             )}
           </section>
 
@@ -502,19 +597,6 @@ export function App() {
             ))}
             <div className="btn-row"><button type="button" onClick={addExtra}>+ Posten</button></div>
           </section>
-
-          <section className="card">
-            <details className="advanced">
-              <summary>Einstellungen / API-Keys</summary>
-              <label>Google-Maps-API-Key
-                <input type="password" value={keys.gmaps} placeholder="AIza…" onChange={(e) => patch({ keys: { ...keys, gmaps: e.target.value } })} />
-              </label>
-              <label>Tankerkönig-API-Key
-                <input type="password" value={keys.tankerkoenig} placeholder="00000000-…" onChange={(e) => patch({ keys: { ...keys, tankerkoenig: e.target.value } })} />
-              </label>
-              <p className="hint">Keys &amp; Personen werden nur lokal im Browser gespeichert.</p>
-            </details>
-          </section>
         </aside>
 
         <main className="main">
@@ -529,8 +611,8 @@ export function App() {
 
           <section className="card">
             <h2><PinIcon /> Karte</h2>
-            {g ? <RouteMap google={g} directions={directions} /> : (
-              <div className="map placeholder"><p>Karte erscheint nach „Fahrt berechnen" (Google-Maps-API-Key erforderlich).</p></div>
+            {geometry ? <RouteMap geometry={geometry} tripPlan={lastPlan || undefined} persons={result?.perPerson || undefined} /> : (
+              <div className="map placeholder"><p>Karte erscheint nach „Fahrt berechnen".</p></div>
             )}
           </section>
 
@@ -543,6 +625,7 @@ export function App() {
                   <tr>
                     <th>Etappe</th>
                     <th className="kmcol">Stadt</th>
+                    <th className="kmcol">Dorf</th>
                     <th className="kmcol">Land</th>
                     <th className="kmcol">Autob.</th>
                     <th className="kmcol">Σ km</th>
@@ -557,7 +640,7 @@ export function App() {
                   {segments.map((s) => (
                     <tr key={s.id}>
                       <td><input className="seg-label" value={s.label} onChange={(e) => updateSegment(s.id, { label: e.target.value })} /></td>
-                      {(["stadt", "landstrasse", "autobahn"] as RoadType[]).map((rt) => (
+                      {(["stadt", "dorf", "landstrasse", "autobahn"] as RoadType[]).map((rt) => (
                         <td key={rt} className="kmcol">
                           <input type="number" min="0" step="0.1" className="seg-km" value={s.roadKm[rt]}
                             onChange={(e) => updateRoadKm(s.id, rt, parseFloat(e.target.value) || 0)} />
@@ -586,34 +669,140 @@ export function App() {
             <BarChart format={eur} bars={result.perPerson.map((p) => ({ label: p.name, value: p.total, highlight: p.total === maxPersonTotal && maxPersonTotal > 0 }))} />
             <table className="result-table">
               <thead>
-                <tr><th>Person</th><th>km</th><th>Sprit</th><th>pro km</th><th>fix</th><th>zu zahlen</th></tr>
+                <tr>
+                  <th>Name</th>
+                  <th>Strecke</th>
+                  <th>Sprit</th>
+                  {extras.some((e) => e.enabled && e.mode === "perKm") && <th>Verschleiß</th>}
+                  {extras.some((e) => e.enabled && e.mode === "fixed") && <th>Fixkosten</th>}
+                  {result.detourCost > 0 && <th>Umweg</th>}
+                  <th>Zu zahlen</th>
+                  <th>Details</th>
+                </tr>
               </thead>
               <tbody>
-                {result.perPerson.map((r) => (
-                  <tr key={r.personId}>
-                    <td>{r.name}{trip.driverId === r.personId && <span className="badge">Fahrer</span>}</td>
-                    <td>{num(r.personKm)}</td>
-                    <td>{eur(r.fuelCost)}</td>
-                    <td>{eur(r.perKmExtraCost)}</td>
-                    <td>{eur(r.fixedExtraCost)}</td>
-                    <td className="pay">{eur(r.total)}</td>
-                  </tr>
-                ))}
+                {result.perPerson.filter(r => r.personKm > 0 || r.personId === config.driverId).map((r) => {
+                  const isDriver = r.personId === config.driverId;
+                  const isExpanded = expandedRow === r.personId;
+                  return (
+                    <Fragment key={r.personId}>
+                      <tr>
+                        <td>
+                          {r.name}
+                          {isDriver && <span className="badge">Fahrer</span>}
+                        </td>
+                        <td>{num(r.personKm)} km</td>
+                        <td>{eur(r.fuelCost)}</td>
+                        {extras.some((e) => e.enabled && e.mode === "perKm") && <td>{eur(r.perKmExtraCost)}</td>}
+                        {extras.some((e) => e.enabled && e.mode === "fixed") && <td>{eur(r.fixedExtraCost)}</td>}
+                        {result.detourCost > 0 && <td>{r.detourCost > 0 ? eur(r.detourCost) : "-"}</td>}
+                        <td className="pcol pay">
+                           {eur(r.finalTotal)}
+                           <br />
+                           {r.sponsorBonus !== 0 && (
+                             <small style={{ color: r.sponsorBonus < 0 ? "var(--good)" : "var(--warn)", display: "block", marginTop: "4px" }}>
+                               {r.sponsorBonus > 0 ? "Zahlt " : "Spart "}{eur(Math.abs(r.sponsorBonus))}
+                             </small>
+                           )}
+                         </td>
+                         <td className="pcol">
+                           <div style={{display: "flex", gap: "8px", justifyContent: "center"}}>
+                             <button className="ghost" style={{ padding: "4px 8px" }} onClick={() => setExpandedRow(expandedRow === r.personId ? null : r.personId)}>
+                               {expandedRow === r.personId ? "▲ Zu" : "▼ Info"}
+                             </button>
+                             <button type="button" className="ghost" style={{ padding: "4px 8px" }} onClick={() => setPrintPersonId(r.personId)}>
+                               🖨️ PDF
+                             </button>
+                           </div>
+                         </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="details-row">
+                          <td colSpan={10} style={{ padding: 0, borderBottom: "1px solid var(--card-border)" }}>
+                            <div style={{ padding: "1.2rem", background: "rgba(0,0,0,0.3)", margin: "8px", borderRadius: "var(--radius-md)", borderLeft: "4px solid var(--accent)", textAlign: "left" }}>
+                               <p style={{ margin: "0 0 0.75rem 0", fontSize: "0.95rem" }}><strong>Detail-Abrechnung für {r.name}:</strong></p>
+                               <ul style={{ margin: 0, paddingLeft: "1.5rem", lineHeight: "1.6", color: "var(--text-muted)", fontSize: "0.9rem" }}>
+                                 <li><strong style={{color: "var(--text-main)"}}>Basis-Strecke:</strong> Fährt <strong>{num(r.personKm)} km</strong> der Strecke mit. Anteil an Basis-Kosten: <strong style={{color: "var(--text-main)"}}>{eur(r.fuelCost + r.perKmExtraCost)}</strong></li>
+                                 {r.detourKm !== undefined && !isDriver && (
+                                   <li>
+                                     <strong style={{color: "var(--text-main)"}}>Umweg:</strong> {r.detourKm > 0 ? (
+                                       r.dropoffDetourKm !== undefined && r.dropoffDetourKm > 0.1 ? (
+                                         <span>Du verursachst insgesamt <strong>{num(r.detourKm)} km</strong> eigenen Umweg. Davon <strong style={{color: "var(--text-main)"}}>{num(r.standardDetourKm || 0)} km</strong> für deine reine Abholung und <strong style={{color: "var(--text-main)"}}>{num(r.dropoffDetourKm)} km</strong> extra für deine Sonder-Absetzorte! Anteil an den Umweg-Kosten: <strong style={{color: "var(--text-main)"}}>{eur(r.detourCost)}</strong></span>
+                                       ) : (
+                                         <span>Hat einen reinen Abhol-Umweg von <strong>{num(r.detourKm)} km</strong> verursacht. Anteil an gesamten Umweg-Kosten: <strong style={{color: "var(--text-main)"}}>{eur(r.detourCost)}</strong></span>
+                                       )
+                                     ) : <span>Hat keinen eigenen Umweg verursacht (0 km). Zahlt daher <strong style={{color: "var(--text-main)"}}>0,00 €</strong> vom restlichen Umweg.</span>}
+                                   </li>
+                                 )}
+                                 {r.fixedExtraCost > 0 && (
+                                   <li><strong style={{color: "var(--text-main)"}}>Fixkosten:</strong> Anteil an fixen Spesen (Maut/Parken): <strong style={{color: "var(--text-main)"}}>{eur(r.fixedExtraCost)}</strong></li>
+                                 )}
+                                 {r.sponsorBonus !== 0 && (
+                                   <li><strong style={{color: r.sponsorBonus < 0 ? "var(--good)" : "var(--warn)"}}>Sponsoring:</strong> {r.sponsorBonus > 0 ? `Übernimmt freundlicherweise ${eur(r.sponsorBonus)} von anderen.` : `Bekommt ${eur(Math.abs(r.sponsorBonus))} von jemand anderem erlassen.`}</li>
+                                 )}
+                                 <li style={{marginTop: "0.5rem", color: "var(--text-main)"}}><strong>Summe:</strong> <strong style={{color: "var(--good-hover)"}}>{eur(r.finalTotal)}</strong></li>
+                               </ul>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr>
-                  <td>Gesamt</td><td></td>
+                  <td>Gesamt</td>
+                  <td>{num(result.totalDistanceKm)} km</td>
                   <td>{eur(result.totalFuelCost)}</td>
-                  <td>{eur(result.totalPerKmExtra)}</td>
-                  <td>{eur(result.totalFixedExtra)}</td>
+                  {extras.some((e) => e.enabled && e.mode === "perKm") && <td>{eur(result.totalPerKmExtra)}</td>}
+                  {extras.some((e) => e.enabled && e.mode === "fixed") && <td>{eur(result.totalFixedExtra)}</td>}
+                  {result.detourCost > 0 && <td>{eur(result.detourCost)}</td>}
                   <td className="pay">{eur(result.grandTotal)}</td>
+                  <td></td>
                 </tr>
               </tfoot>
             </table>
           </section>
         </main>
       </div>
-    </div>
+      </div>
+
+      <div className="print-only">
+        {printPersonId && printPersonId !== "ALL" && (
+          <Invoice 
+            person={result.perPerson.find(p => p.personId === printPersonId)!} 
+            allPersons={result.perPerson}
+            tripPlan={lastPlan || undefined}
+            geometry={geometry}
+            grandTotal={result.grandTotal}
+          />
+        )}
+        {printPersonId === "ALL" && (
+          <>
+            <GeneralInvoice
+              persons={result.perPerson}
+              config={calcConfig}
+              tripPlan={lastPlan || undefined}
+              geometry={geometry}
+              grandTotal={result.grandTotal}
+              totalDistanceKm={result.totalDistanceKm}
+            />
+            {result.perPerson.map(p => (
+              <div key={p.personId} style={{ pageBreakBefore: "always", paddingTop: "20px" }}>
+                <Invoice 
+                  person={p} 
+                  allPersons={result.perPerson}
+                  tripPlan={lastPlan || undefined}
+                  geometry={geometry}
+                  grandTotal={result.grandTotal}
+                />
+              </div>
+            ))}
+          </>
+        )}
+      </div>
+    </Fragment>
   );
 }
 

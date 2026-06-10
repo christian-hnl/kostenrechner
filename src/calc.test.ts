@@ -14,16 +14,16 @@ const persons: Person[] = [
 
 /** Hilfsfunktion: km auf einem einzigen Straßentyp. */
 function km(type: RoadType, value: number): RoadKm {
-  return { stadt: 0, landstrasse: 0, autobahn: 0, [type]: value };
+  return { stadt: 0, dorf: 0, landstrasse: 0, autobahn: 0, [type]: value };
 }
 
 function cfg(over: Partial<CalcConfig> = {}): CalcConfig {
   return {
     baseConsumption: 8,
-    roadMultipliers: { stadt: 1.5, landstrasse: 1, autobahn: 1.25 },
+    roadMultipliers: { stadt: 1.5, dorf: 1.25, landstrasse: 1, autobahn: 1.25 },
     pricePerLiter: 2,
     driverId: A,
-    driverPays: true,
+    driverCostFactor: 1,
     fuelType: "e10",
     ...over,
   };
@@ -72,7 +72,7 @@ describe("calculate – faire Aufteilung", () => {
       {
         id: "s1",
         label: "S1",
-        roadKm: { stadt: 10, landstrasse: 50, autobahn: 40 },
+        roadKm: { stadt: 10, dorf: 0, landstrasse: 50, autobahn: 40 },
         presentIds: [A],
       },
     ];
@@ -86,7 +86,7 @@ describe("calculate – faire Aufteilung", () => {
     const segs: Segment[] = [
       { id: "s1", label: "S1", roadKm: km("landstrasse", 100), presentIds: [A, B, C] },
     ];
-    const r = calculate(cfg({ driverPays: false }), persons, segs, []);
+    const r = calculate(cfg({ driverCostFactor: 0 }), persons, segs, []);
     const a = r.perPerson.find((p) => p.personId === A)!;
     expect(a.fuelCost).toBeCloseTo(0);
     // 16 € auf B und C
