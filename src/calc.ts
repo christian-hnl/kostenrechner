@@ -40,6 +40,7 @@ export function calculate(
       personId: p.id,
       name: p.name,
       personKm: 0,
+      liters: 0,
       fuelCost: 0,
       perKmExtraCost: 0,
       fixedExtraCost: 0,
@@ -91,6 +92,7 @@ export function calculate(
         const ratio = weight / presentWeight;
         const r = perPerson.get(id)!;
         r.fuelCost += fuelCost * ratio;
+        r.liters += liters * ratio;
         r.perKmExtraCost += perKmExtraCost * ratio;
       }
       totalFuelCost += fuelCost;
@@ -131,6 +133,7 @@ export function calculate(
     // Override the segment-based personal costs
     for (const r of perPerson.values()) {
       r.fuelCost = 0;
+      r.liters = 0;
       r.perKmExtraCost = 0;
     }
 
@@ -165,6 +168,7 @@ export function calculate(
       for (const p of activePersons) {
         const share = p.weight / totalBaseWeight;
         p.fuelCost = directFuelCost * share;
+        p.liters = dLiters * share;
         p.perKmExtraCost = dPerKmExtraCost * share;
       }
     }
@@ -190,6 +194,9 @@ export function calculate(
     }
 
     const totalDetourKm = Math.max(0, totalDistanceKm - directRoute.totalKm);
+    // Extra litres burned by detours, billed to the causing passenger alongside
+    // their detour cost so each person's litres reflect what they actually cause.
+    const detourLiters = Math.max(0, totalLiters - dLiters);
 
     if (detourCost > 0 || totalDetourKm > 0) {
       for (const p of passengers) {
@@ -197,9 +204,11 @@ export function calculate(
           const ratio = (p.detourKm || 0) / sumStandalone;
           p.detourCost = detourCost * ratio;
           p.sharedDetourKm = totalDetourKm * ratio;
+          p.liters += detourLiters * ratio;
         } else {
           p.detourCost = detourCost / passengers.length;
           p.sharedDetourKm = totalDetourKm / passengers.length;
+          p.liters += detourLiters / passengers.length;
         }
       }
     }

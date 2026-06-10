@@ -15,6 +15,7 @@ interface GeneralInvoiceProps {
 
 export function GeneralInvoice({ persons, tripPlan, geometry, grandTotal, totalDistanceKm }: GeneralInvoiceProps) {
   const totalPersonKm = persons.reduce((s, p) => s + p.personKm, 0);
+  const totalLiters = persons.reduce((s, p) => s + p.liters, 0);
   const avgOccupancy = totalDistanceKm > 0 ? totalPersonKm / totalDistanceKm : 0;
   const directKm = tripPlan?.directInfo?.totalKm ?? 0;
   const detourKm = Math.max(0, totalDistanceKm - directKm);
@@ -67,6 +68,11 @@ export function GeneralInvoice({ persons, tripPlan, geometry, grandTotal, totalD
           <div className="stat-hint">über die Strecke</div>
         </div>
         <div className="stat-tile">
+          <div className="stat-label">Spritverbrauch</div>
+          <div className="stat-value">{num(totalLiters)} L</div>
+          <div className="stat-hint">gesamt</div>
+        </div>
+        <div className="stat-tile">
           <div className="stat-label">Ø Preis je km</div>
           <div className="stat-value">{totalDistanceKm > 0 ? eur(grandTotal / totalDistanceKm) : eur(0)}</div>
         </div>
@@ -108,6 +114,7 @@ export function GeneralInvoice({ persons, tripPlan, geometry, grandTotal, totalD
             <th>Person</th>
             <th>Farbe</th>
             <th>Mitgefahrene Strecke</th>
+            <th>Sprit</th>
             <th>Anteiliger Umweg</th>
             <th style={{ textAlign: "right" }}>Betrag</th>
           </tr>
@@ -127,6 +134,7 @@ export function GeneralInvoice({ persons, tripPlan, geometry, grandTotal, totalD
                 <span style={{ display: "inline-block", width: "24px", height: "8px", borderRadius: "4px", background: p.color }}></span>
               </td>
               <td>{num(p.personKm)} km</td>
+              <td>{num(p.liters)} L</td>
               <td>
                 {p.detourCost > 0 ? (
                   <span>{p.sharedDetourKm ? num(p.sharedDetourKm) : num(p.detourKm || 0)} km ({eur(p.detourCost)})</span>
@@ -146,6 +154,7 @@ export function GeneralInvoice({ persons, tripPlan, geometry, grandTotal, totalD
               <strong>Gesamte Fahrt</strong>
             </td>
             <td><strong>{num(totalDistanceKm)} km</strong></td>
+            <td><strong>{num(totalLiters)} L</strong></td>
             <td></td>
             <td style={{ textAlign: "right", fontSize: "1.2rem", fontWeight: "bold" }}>
               {eur(grandTotal)}

@@ -143,6 +143,11 @@ export function Invoice({ person, allPersons, tripPlan, geometry, grandTotal, dr
               <div className="stat-value">{num(person.personKm)} km</div>
             </div>
             <div className="stat-tile">
+              <div className="stat-label">Spritverbrauch</div>
+              <div className="stat-value">{num(person.liters)} L</div>
+              <div className="stat-hint">dein Anteil</div>
+            </div>
+            <div className="stat-tile">
               <div className="stat-label">Ø Preis je km</div>
               <div className="stat-value">{eur(pricePerKm)}</div>
               <div className="stat-hint">über deine Strecke</div>

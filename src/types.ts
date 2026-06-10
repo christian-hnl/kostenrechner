@@ -71,6 +71,8 @@ export interface PersonResult {
   name: string;
   /** Gefahrene Kilometer dieser Person (Summe der Etappen, auf denen sie saß). */
   personKm: number;
+  /** Anteiliger Spritverbrauch dieser Person in Litern. */
+  liters: number;
   fuelCost: number;
   perKmExtraCost: number;
   fixedExtraCost: number;
