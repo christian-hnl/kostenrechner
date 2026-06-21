@@ -51,7 +51,6 @@ interface AppState {
   directRoute?: any;
   passengerDetours?: Record<string, number>;
   passengerStandardDetours?: Record<string, number>;
-  orsKey?: string;
   routeMode?: "fastest" | "shortest";
   avoidHighways?: boolean;
 }
@@ -127,7 +126,7 @@ export function App() {
     (async () => {
       let list = await getPeople();
       if (list.length === 0) {
-        const anna: PersonRecord = { id: uid(), name: "Anna", homeAddress: "Berlin" };
+        const anna: PersonRecord = { id: uid(), name: "Andi", homeAddress: "Berlin" };
         const ben: PersonRecord = { id: uid(), name: "Ben", homeAddress: "Leipzig" };
         await savePerson(anna);
         await savePerson(ben);
@@ -228,7 +227,6 @@ export function App() {
         passengers,
         destination: trip.destination,
         roundTrip: trip.roundTrip,
-        orsKey: state.orsKey,
         routeMode: state.routeMode || "fastest",
         avoidHighways: state.avoidHighways || false,
       });
@@ -407,7 +405,7 @@ export function App() {
           <button type="button" onClick={copySummary}>{copied ? "Kopiert ✓" : "Zusammenfassung kopieren"}</button>
           <button type="button" className="ghost" onClick={() => {
             if (confirm("Eingaben (ohne gespeicherte Personen) zurücksetzen?")) {
-              setState(s => ({ ...defaultState(), orsKey: s.orsKey, routeMode: s.routeMode, avoidHighways: s.avoidHighways }));
+              setState(s => ({ ...defaultState(), routeMode: s.routeMode, avoidHighways: s.avoidHighways }));
               setStations([]);
               setGeometry(null);
               setRouteInfo(null);
@@ -494,20 +492,19 @@ export function App() {
           </div>
 
           <div className="card">
-            <h2>⚙️ Profi-Routing (Optional)</h2>
-            <p className="hint" style={{marginBottom: "12px"}}>Für Spezialfunktionen wird ein kostenloser OpenRouteService API-Key benötigt.</p>
+            <h2>⚙️ Profi-Routing</h2>
+
             <label>
-              OpenRouteService API Key
-              <input type="text" value={state.orsKey || ""} onChange={e => patch({ orsKey: e.target.value })} placeholder="Token hier einfügen..." />
+              OpenRouteService API
             </label>
-            {state.orsKey && state.orsKey.trim().length > 10 && (
+            {import.meta.env.VITE_ORS_API_KEY && import.meta.env.VITE_ORS_API_KEY.trim().length > 10 && (
               <div style={{ marginTop: "1rem", display: "flex", gap: "1rem", flexWrap: "wrap" }}>
                 <label className="check" style={{ margin: 0 }}>
                   <input type="checkbox" checked={state.routeMode === "shortest"} onChange={e => patch({ routeMode: e.target.checked ? "shortest" : "fastest" })} />
                   Kürzester Weg (statt schnellster)
                 </label>
                 <label className="check" style={{ margin: 0 }}>
-                  <input type="checkbox" checked={state.avoidHighways} onChange={e => patch({ avoidHighways: e.target.checked })} />
+                  <input type="checkbox" checked={state.avoidHighways || false} onChange={e => patch({ avoidHighways: e.target.checked })} />
                   Autobahn vermeiden
                 </label>
               </div>

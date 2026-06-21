@@ -11,7 +11,7 @@ async function optimizeAddresses(
   origin: string,
   destination: string,
   waypoints: string[],
-  routeOpts: { orsKey?: string; routeMode?: "fastest" | "shortest"; avoidHighways?: boolean }
+  routeOpts: { routeMode?: "fastest" | "shortest"; avoidHighways?: boolean }
 ): Promise<number[]> {
   if (waypoints.length <= 1) return waypoints.map((_, i) => i);
   const info = await computeRoute({ origin, destination, waypoints, optimize: true, ...routeOpts });
@@ -39,11 +39,10 @@ export async function planTrip(opts: {
   passengers: PersonRecord[];
   destination: string;
   roundTrip: boolean;
-  orsKey?: string;
   routeMode?: "fastest" | "shortest";
   avoidHighways?: boolean;
 }): Promise<TripPlan> {
-  const { driver, passengers, destination, roundTrip, orsKey, routeMode, avoidHighways } = opts;
+  const { driver, passengers, destination, roundTrip, routeMode, avoidHighways } = opts;
 
   // 1. Direct Route (Driver -> Destination and back if roundTrip)
   const directWps = roundTrip ? [destination] : [];
@@ -54,7 +53,7 @@ export async function planTrip(opts: {
     destination: directDest,
     waypoints: directWps,
     optimize: false,
-    orsKey, routeMode, avoidHighways
+    routeMode, avoidHighways
   });
 
   // 2. Determine optimized pickup order
@@ -65,13 +64,13 @@ export async function planTrip(opts: {
       destination,
       waypoints: passengers.map(p => p.homeAddress),
       optimize: true,
-      orsKey, routeMode, avoidHighways
+      routeMode, avoidHighways
     });
     orderedPassengers = pickupInfo.waypointOrder.map(i => passengers[i]).filter(Boolean);
   }
 
   // 3. Build exact sequence of stops
-  const routeOpts = { orsKey, routeMode, avoidHighways };
+  const routeOpts = { routeMode, avoidHighways };
   const stops: Stop[] = [];
   stops.push({ address: driver.homeAddress, label: `${driver.name} (Start)`, pickup: [driver.id], dropoff: [] });
 
@@ -160,14 +159,14 @@ export async function planTrip(opts: {
     destination: actualDest,
     waypoints: actualWaypoints,
     optimize: false,
-    orsKey, routeMode, avoidHighways
+    routeMode, avoidHighways
   });
 
   // 4b. Calculate standalone detours for each passenger
   const passengerDetours: Record<string, number> = {};
   const passengerStandardDetours: Record<string, number> = {};
   if (passengers.length > 0) {
-    const promises = passengers.map(async (p) => {
+    for (const p of passengers) {
       // 1. Spezial-Umweg (Full Route with custom dropoffs)
       const wps: string[] = [];
       wps.push(p.homeAddress);
@@ -182,13 +181,16 @@ export async function planTrip(opts: {
         finalDest = driver.homeAddress;
       }
       
-      const pInfoPromise = computeRoute({
+      const pInfo = await computeRoute({
         origin: driver.homeAddress,
         destination: finalDest,
         waypoints: wps,
         optimize: false,
-        orsKey, routeMode, avoidHighways
+        routeMode, avoidHighways
       });
+      
+      // Delay to avoid hitting rate limits
+      await new Promise(r => setTimeout(r, 800));
 
       // 2. Standard-Umweg (nur Abholung Wohnort)
       const stdWps: string[] = [p.homeAddress];
@@ -197,20 +199,20 @@ export async function planTrip(opts: {
         stdWps.push(destination, p.homeAddress);
         stdDest = driver.homeAddress;
       }
-      const pStdPromise = computeRoute({
+      const pStd = await computeRoute({
         origin: driver.homeAddress,
         destination: stdDest,
         waypoints: stdWps,
         optimize: false,
-        orsKey, routeMode, avoidHighways
+        routeMode, avoidHighways
       });
       
-      const [pInfo, pStd] = await Promise.all([pInfoPromise, pStdPromise]);
+      // Delay to avoid hitting rate limits
+      await new Promise(r => setTimeout(r, 800));
       
       passengerDetours[p.id] = Math.max(0, pInfo.totalKm - directInfo.totalKm);
       passengerStandardDetours[p.id] = Math.max(0, pStd.totalKm - directInfo.totalKm);
-    });
-    await Promise.all(promises);
+    }
   }
 
   // 5. Build segments & simulate who is in the car

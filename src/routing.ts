@@ -65,7 +65,6 @@ export async function computeRouteORS(opts: {
   origin: string;
   destination: string;
   waypoints: string[];
-  orsKey: string;
   routeMode: "fastest" | "shortest";
   avoidHighways: boolean;
 }, coords: [number, number][]): Promise<RouteInfo> {
@@ -85,7 +84,7 @@ export async function computeRouteORS(opts: {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      "Authorization": opts.orsKey.trim(),
+      "Authorization": (import.meta.env.VITE_ORS_API_KEY || "").trim(),
     },
     body: JSON.stringify(body)
   });
@@ -144,7 +143,6 @@ export async function computeRoute(opts: {
   destination: string;
   waypoints: string[];
   optimize?: boolean;
-  orsKey?: string;
   routeMode?: "fastest" | "shortest";
   avoidHighways?: boolean;
 }): Promise<RouteInfo> {
@@ -157,10 +155,10 @@ export async function computeRoute(opts: {
   }
 
   // If NOT optimize and ORS key is present, use ORS
-  if (!opts.optimize && opts.orsKey && opts.orsKey.trim().length > 5) {
+  const orsKey = import.meta.env.VITE_ORS_API_KEY;
+  if (!opts.optimize && orsKey && orsKey.trim().length > 5) {
     return computeRouteORS({
       ...opts,
-      orsKey: opts.orsKey,
       routeMode: opts.routeMode || "fastest",
       avoidHighways: opts.avoidHighways || false,
     }, coords);
